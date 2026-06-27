@@ -20,8 +20,16 @@ from urllib.request import Request, urlopen
 API_BASE_URL = "https://api.cloudflare.com/client/v4"
 DEFAULT_BACKUP_DIR = "backups"
 DEFAULT_ENV_FILE = ".env"
+DEFAULT_BACKUP_FORMAT = "json"
 TIMESTAMP_FORMAT = "%Y-%m-%d_%H-%M-%S"
 BACKUP_DIR_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
+BACKUP_FORMAT_ALIASES = {
+    "json": "json",
+    "txt": "txt",
+    "bind": "txt",
+    "bind9": "txt",
+    "zone": "txt",
+}
 
 
 class ConfigError(Exception):
@@ -76,7 +84,15 @@ def load_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def load_config(env_file: Path) -> tuple[str, int, Path]:
+def normalize_backup_format(raw_format: str) -> str:
+    backup_format = raw_format.strip().lower()
+    if backup_format not in BACKUP_FORMAT_ALIASES:
+        accepted = ", ".join(sorted(BACKUP_FORMAT_ALIASES))
+        raise ConfigError(f"BACKUP_FORMAT must be one of: {accepted}")
+    return BACKUP_FORMAT_ALIASES[backup_format]
+
+
+def load_config(env_file: Path) -> tuple[str, int, Path, str]:
     file_values = load_env_file(env_file)
     values = {**file_values, **os.environ}
 
@@ -98,7 +114,10 @@ def load_config(env_file: Path) -> tuple[str, int, Path]:
         raise ConfigError("BACKUP_RETENTION_DAYS must be zero or greater")
 
     backup_root = Path(values.get("BACKUP_OUTPUT_DIR", DEFAULT_BACKUP_DIR)).expanduser()
-    return api_token, retention_days, backup_root
+    backup_format = normalize_backup_format(
+        values.get("BACKUP_FORMAT", DEFAULT_BACKUP_FORMAT)
+    )
+    return api_token, retention_days, backup_root, backup_format
 
 
 def cloudflare_get(api_token: str, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -131,6 +150,34 @@ def cloudflare_get(api_token: str, path: str, params: dict[str, Any] | None = No
         raise CloudflareAPIError(f"Cloudflare API returned errors: {errors}")
 
     return payload
+
+
+def cloudflare_get_text(
+    api_token: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+) -> str:
+    url = f"{API_BASE_URL}{path}"
+    if params:
+        url = f"{url}?{urlencode(params)}"
+
+    request = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Accept": "text/plain",
+        },
+        method="GET",
+    )
+
+    try:
+        with urlopen(request, timeout=60) as response:
+            return response.read().decode("utf-8")
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise CloudflareAPIError(f"HTTP {exc.code} from Cloudflare: {body}") from exc
+    except URLError as exc:
+        raise CloudflareAPIError(f"Could not reach Cloudflare API: {exc.reason}") from exc
 
 
 def fetch_paginated(api_token: str, path: str, params: dict[str, Any] | None = None) -> list[Any]:
@@ -167,7 +214,15 @@ def write_json(path: Path, data: Any) -> None:
     )
 
 
-def create_backup(api_token: str, backup_root: Path) -> Path:
+def write_text(path: Path, data: str) -> None:
+    path.write_text(data.rstrip("\n") + "\n", encoding="utf-8")
+
+
+def export_zone_bind9(api_token: str, zone_id: str) -> str:
+    return cloudflare_get_text(api_token, f"/zones/{zone_id}/dns_records/export")
+
+
+def create_backup(api_token: str, backup_root: Path, backup_format: str) -> Path:
     timestamp = datetime.now(timezone.utc).strftime(TIMESTAMP_FORMAT)
     backup_dir = backup_root / timestamp
     backup_dir.mkdir(parents=True, exist_ok=False)
@@ -175,6 +230,7 @@ def create_backup(api_token: str, backup_root: Path) -> Path:
     zones = fetch_paginated(api_token, "/zones")
     manifest: dict[str, Any] = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "backup_format": backup_format,
         "zone_count": len(zones),
         "zones": [],
     }
@@ -185,16 +241,20 @@ def create_backup(api_token: str, backup_root: Path) -> Path:
         zone_id = zone["id"]
         zone_name = zone["name"]
         records = fetch_paginated(api_token, f"/zones/{zone_id}/dns_records")
-        filename = f"{safe_zone_filename(zone_name)}.json"
+        filename = f"{safe_zone_filename(zone_name)}.{backup_format}"
 
-        write_json(
-            backup_dir / filename,
-            {
-                "zone": zone,
-                "dns_record_count": len(records),
-                "dns_records": records,
-            },
-        )
+        if backup_format == "json":
+            write_json(
+                backup_dir / filename,
+                {
+                    "zone": zone,
+                    "dns_record_count": len(records),
+                    "dns_records": records,
+                },
+            )
+        else:
+            write_text(backup_dir / filename, export_zone_bind9(api_token, zone_id))
+
         manifest["zones"].append(
             {
                 "id": zone_id,
@@ -239,8 +299,10 @@ def main() -> int:
     args = parse_args()
 
     try:
-        api_token, retention_days, backup_root = load_config(Path(args.env_file))
-        backup_dir = create_backup(api_token, backup_root)
+        api_token, retention_days, backup_root, backup_format = load_config(
+            Path(args.env_file)
+        )
+        backup_dir = create_backup(api_token, backup_root, backup_format)
         removed = cleanup_old_backups(backup_root, retention_days)
     except (ConfigError, CloudflareAPIError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -10,7 +10,7 @@ On each run, `backup_cloudflare_zones.py`:
 2. Lists all Cloudflare zones available to the token.
 3. Downloads all DNS records for each zone.
 4. Creates a dated backup folder under `backups/` by default.
-5. Writes one JSON file per zone, plus `zones.json` and `manifest.json`.
+5. Writes one backup file per zone in the configured format, plus `zones.json` and `manifest.json`.
 6. Removes older backup folders according to the retention period configured in days.
 
 ### Requirements
@@ -26,9 +26,12 @@ Create a local `.env` file based on `.env.example`:
 CLOUDFLARE-API-TOKEN=replace-with-your-cloudflare-api-token
 BACKUP_RETENTION_DAYS=30
 BACKUP_OUTPUT_DIR=backups
+BACKUP_FORMAT=json
 ```
 
 `CLOUDFLARE_API_TOKEN` is also accepted if you prefer an environment-variable-safe name.
+
+`BACKUP_FORMAT` accepts `json` or `txt`. The default is `json`. Use `txt` to save each zone through Cloudflare's DNS export endpoint in BIND9 zone-file format, like the Cloudflare web interface. `bind`, `bind9`, and `zone` are accepted as aliases for `txt`.
 
 ### Usage
 
@@ -60,7 +63,7 @@ A cada execução, `backup_cloudflare_zones.py`:
 2. Lista todas as zonas da Cloudflare disponíveis para o token.
 3. Baixa todos os registros DNS de cada zona.
 4. Cria uma pasta de backup com data dentro de `backups/` por padrão.
-5. Grava um arquivo JSON por zona, além de `zones.json` e `manifest.json`.
+5. Grava um arquivo de backup por zona no formato configurado, além de `zones.json` e `manifest.json`.
 6. Remove pastas de backup antigas conforme o período de retenção configurado em dias.
 
 ### Requisitos
@@ -76,9 +79,12 @@ Crie um arquivo `.env` local baseado no `.env.example`:
 CLOUDFLARE-API-TOKEN=replace-with-your-cloudflare-api-token
 BACKUP_RETENTION_DAYS=30
 BACKUP_OUTPUT_DIR=backups
+BACKUP_FORMAT=json
 ```
 
 `CLOUDFLARE_API_TOKEN` também é aceito caso prefira um nome compatível com variáveis de ambiente.
+
+`BACKUP_FORMAT` aceita `json` ou `txt`. O padrão é `json`. Use `txt` para salvar cada zona pelo endpoint de exportação de DNS da Cloudflare no formato de zona BIND9, como na interface web da Cloudflare. `bind`, `bind9` e `zone` são aceitos como aliases para `txt`.
 
 ### Uso
 
